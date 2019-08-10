@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.watcherExclude": {
+			"**/Deep-Reinforcement-Learning-Hands-On/**": true,
+			"**/env/**": true
+		}
+	}
+}
