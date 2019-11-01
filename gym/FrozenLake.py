@@ -13,54 +13,32 @@ from tensorflow.keras.models import Model,clone_model
 
 from tensorboardX import SummaryWriter
 
-class  YColorWrapper(gym.ObservationWrapper):
-    def __init__(self,env):
-        super().__init__(env)
-        shape = list(env.observation_space.low.shape)
-        shape[2] = 1 
-        self.observation_space = gym.spaces.Box(low=0,high=255,shape=shape,dtype=np.uint8)
-    def observation(self,obs):
-        #Y = 0.299R + 0.587G + 0.114
-        obs = obs.astype(np.float32)
-        obs = obs[:,:,0]*0.299+obs[:,:,1]*0.587+obs[:,:,2]*0.144
-        obs =  np.expand_dims(obs.astype(np.uint8),axis=2)
-        return obs
-
-class BufferWrapper(gym.ObservationWrapper):
-    def __init__(self,env,n_steps):
-        super().__init__(env)
-        old_space = self.observation_space
-        self.observation_space = gym.spaces.Box(
-            old_space.low .repeat(n_steps,axis=2)
-        ,   old_space.high.repeat(n_steps,axis=2)
-        ,   dtype = np.uint8
-        )
-    def reset(self):
-        self.buffer = np.zeros_like(self.observation_space.low)
-        return self.observation(self.env.reset())
-
-    def observation(self,observation):
-        self.buffer[:-1] = self.buffer[1:]
-        self.buffer[:,:,-1] = observation[:,:,0]
-        return self.buffer
-
-def DQN(X,params):
-    X = layers.Conv2D(32,kernel_size=8,strides=4,activation='relu')(X)
-    X = layers.Conv2D(64,kernel_size=4,strides=2,activation='relu')(X)
-    X = layers.Conv2D(64,kernel_size=3,strides=1,activation='relu')(X)
-    X = layers.Flatten()(X)
+def NN(X,params):
+    #X = layers.Dense(512,activation='relu',kernel_initializer='zeros')(X)
+    #X = layers.Dense(params['n_actions'],kernel_initializer='zeros')(X)
     X = layers.Dense(512,activation='relu')(X)
     X = layers.Dense(params['n_actions'])(X)
     return X
 
 Experience = collections.namedtuple('Experience',field_names=('state','action','reward','is_done','new_state'))
 
+class OneHotWrapper(gym.ObservationWrapper):
+    def __init__(self,env):
+        super().__init__(env)
+        self.observation_space = gym.spaces.Box(low=0,high=1,shape=(env.observation_space.n,),dtype=np.uint8)
+        self.n = env.observation_space.n
+    
+    def observation(self,obs):
+        return [int(x==obs) for x in range(self.n)]
+def agent_mse(y_pred,y_true):
+    return losses.mean_squared_error(y_pred,y_pred[:,0])
+
 class Agent(object):
     params = {
-        'EPSILON_DECAY'          : 1000
-    ,   'EPSILON_MIN'            : 0.2
-    ,   'EXPERIENCE_BUFFER_SIZE' : 10000
-    ,   'SYNC_TARGET_MODEL'      : 1000
+        'EPSILON_DECAY'          : 10**4
+    ,   'EPSILON_MIN'            : 0.02
+    ,   'EXPERIENCE_BUFFER_SIZE' : 100000
+    ,   'SYNC_TARGET_MODEL'      : 1024
     ,   'BATCH_SIZE'             : 32
     ,   'GAMMA'                  : 0.99
     }
@@ -69,8 +47,7 @@ class Agent(object):
         if params is not None:
             self.params.update(params)
         env = gym.make(envName)
-        env = YColorWrapper(env)
-        env = BufferWrapper(env,n_steps=4)
+        env = OneHotWrapper(env)
         self.env = env
         self.n_action = env.action_space.n
         self.build_models()
@@ -81,7 +58,7 @@ class Agent(object):
 
     def build_models(self):
         I = layers.Input(shape=self.env.observation_space.shape)
-        X = DQN(I,{'n_actions':self.n_action})
+        X = NN(I,{'n_actions':self.n_action})
         model = Model(inputs=I,outputs=X)
         model.summary()
 
@@ -109,8 +86,8 @@ class Agent(object):
         self.reward += reward
         if self._step_count % self.params['SYNC_TARGET_MODEL'] == 0:
             self.train_model()
-            self.model.save_weights('h5/Pong-run.h5')
-            self.tgt_model.load_weights('h5/Pong-run.h5')
+            self.model.save_weights('h5/FrozenLake-run.h5')
+            self.tgt_model.load_weights('h5/FrozenLake-run.h5')
         #if self._step_count > self.params['EXPERIENCE_BUFFER_SIZE']:
         if is_done:
             return self.reward
@@ -118,9 +95,10 @@ class Agent(object):
             return None
 
     def train_model(self):
-        batch_size = self.params['SYNC_TARGET_MODEL']
-        indices = np.random.choice(len(self.experience_buffer),batch_size,replace=False)
+        sample_size = self.params['SYNC_TARGET_MODEL']
+        indices = np.random.choice(len(self.experience_buffer),sample_size,replace=False)
         states,actions,rewards,dones,next_states = zip( *(self.experience_buffer[idx] for idx in indices))
+        if sum(rewards)==0: return
         #states,actions,rewards,dones,next_states = zip(*self.experience_buffer)
         next_state_rewards = np.max(self.tgt_model.predict(np.array(next_states)),axis=1)
         next_state_rewards[np.array(dones)] = 0
@@ -128,8 +106,18 @@ class Agent(object):
         exp_rewards = np.array(rewards) + next_state_rewards*self.params['GAMMA']
         for i,action in enumerate(actions):
             y[i][action] = exp_rewards[i]
-        self.model.fit(x=np.array(states),y=y,batch_size=32,verbose=False)
-
+        #print('w',w)
+        #print('a',actions)
+        #print('e',exp_rewards)
+        #print('y',y)
+        self.model.fit(x=np.array(states),y=y,batch_size=self.params['BATCH_SIZE'],epochs=10,verbose=False)
+        #n = self.env.unwrapped.observation_space.n
+        #print('Exp rewards',exp_rewards)
+        #for i in range(n):
+        #    obs = [ int(x==i) for x in range(n) ]
+        #    print(f'\t{i}:',self.model.predict(np.expand_dims(obs,0))[0])
+        #time.sleep(1)
+        
     def render(self):
         self.env.unwrapped.render()
     
@@ -137,11 +125,10 @@ class Agent(object):
         self.env.close()
 
 
-agent = Agent("PongNoFrameskip-v4")
+agent = Agent("FrozenLake-v0")
 print('Env:',agent.env.unwrapped)
 print('Observation',agent.env.unwrapped.observation_space)
 print('Action',agent.env.unwrapped.action_space)
-print('Action meanging',agent.env.unwrapped.get_action_meanings())
 
 frame_idx = 0
 game_idx  = 0
@@ -162,11 +149,11 @@ while True:
         mean_reward = np.mean(total_rewards)
         if game_idx>=10 and mean_reward>best_mean:
             best_mean = mean_reward
-            if mean_reward > 19.5:
+            if mean_reward > 0.8:
                 print(f"Solved in {frame_idx} frames, Speed {frame_idx/(time.time()-ts):.0f}f/s")
                 break
 
-        print(f'Game:{game_idx}, Frame: {frame_idx}, Reward: {reward}, Mean: {mean_reward:.3f}, Best:{best_mean:.3f}, Epsilon:{agent.epsilon}, Speed {frame_idx/(time.time()-ts):.0f}f/s')
+        print(f'Game:{game_idx}, Frame: {frame_idx}, Reward: {reward}, Mean: {mean_reward:.3f}, Best:{best_mean:.3f}, Epsilon:{agent.epsilon:.2f}, Speed {frame_idx/(time.time()-ts):.0f}f/s')
         agent.reset()
 
 print(f'Epsilon: {agent.epsilon}')
