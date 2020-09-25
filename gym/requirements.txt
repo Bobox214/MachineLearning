@@ -7,7 +7,7 @@ scipy==1.1.0
 torch==0.4.1
 torchvision==0.2.1
 tensorboardX==1.6
-tensorflow==1.13.1
+tensorflow==1.15.4
 tensorboard==1.13.1
 tensorflow-gpu==1.13.1
 tensorflow-estimator==1.13.0
